@@ -1,241 +1,179 @@
+import base64
+import json
 import re
 from typing import List
 from urllib.parse import urljoin
 
-import Levenshtein
-import m3u8
-from anipy_api.provider import (BaseProvider, Episode, ProviderInfoResult,
-                                ProviderSearchResult, ProviderStream)
-from anipy_api.provider.base import LanguageTypeEnum
-from anipy_api.provider.filter import (BaseFilter, FilterCapabilities, Filters,
-                                       MediaType, Season, Status)
-from anipy_api.provider.utils import parsenum
-from anipy_api.provider import Episode
-from anipy_api.error import LangTypeNotAvailableError
-
-
 from bs4 import BeautifulSoup
-
+import m3u8
 from requests import Request
 
-HLS_RE = re.compile(
-    r"(?:file\s*:\s*|source\s*=\s*)[\"']([^\"']+\.m3u8(?:\?[^\"']*)?)[\"']",
-    re.IGNORECASE,
-)
+from anipy_api.provider import (BaseProvider, Episode, ProviderInfoResult,
+                                ProviderSearchResult, ProviderStream)
+from anipy_api.provider.base import ExternalSub, LanguageTypeEnum
+from anipy_api.provider.filter import FilterCapabilities, Filters, Status
 
-class AniDBAppFilter(BaseFilter):
-    def _apply_query(self, query: str):
-        self._request.params["q"] = query
-
-    def _apply_year(self, year: int): 
-        self._request.params["year"] = year
-
-    def _apply_season(self, season: Season):
-        self._request.params["season"] = season.name.lower()
-
-    def _apply_status(self, status: Status): 
-        mapping = {
-            Status.COMPLETED: "Finished Airing",
-            Status.ONGOING: "Currently Airing",
-            Status.UPCOMING: ""
-        }
-        self._request.params["status"] = mapping[status] 
-
-    def _apply_media_type(self, media_type: MediaType):
-        mapping = {
-            MediaType.TV: "TV",
-            MediaType.MOVIE: "Movie",
-            MediaType.OVA: "OVA",
-            MediaType.ONA: "ONA",
-            MediaType.SPECIAL: "Special",
-            MediaType.MUSIC: "Music"
-        }
-        self._request.params["type"] = mapping[media_type] 
-
+def _normalize_sub_lang(label: str, fallback: str) -> tuple:
+    lbl = (label or "").lower()
+    if "ara" in lbl or "arabic" in lbl:
+        return ("Arabic", "ara")
+    if "eng" in lbl or "english" in lbl:
+        return ("English", "eng")
+    if "ger" in lbl or "german" in lbl or "deutsch" in lbl:
+        return ("German", "ger")
+    if "spa" in lbl or "spanish" in lbl or "español" in lbl:
+        if "latin" in lbl:
+            return ("Spanish (Latin America)", "spa")
+        return ("Spanish", "spa")
+    if "fre" in lbl or "french" in lbl or "français" in lbl:
+        return ("French", "fre")
+    if "ita" in lbl or "italian" in lbl:
+        return ("Italian", "ita")
+    if "por" in lbl or "portuguese" in lbl:
+        return ("Portuguese (Brazil)", "por")
+    if "rus" in lbl or "russian" in lbl:
+        return ("Russian", "rus")
+    return (label or "Unknown", fallback or "und")
 class AniDBAppProvider(BaseProvider):
-    """For detailed documentation have a look
-    at the [base class][anipy_api.provider.base.BaseProvider].
-
-    Attributes:
-        NAME: anidbapp 
-        BASE_URL: https://anidb.app
-        FILTER_CAPS: YEAR, MEDIA_TYPE, SEASON, STATUS, NO_QUERY
-    """
-
     NAME: str = "anidbapp"
-    BASE_URL: str = "https://anidb.app"
-    FILTER_CAPS: FilterCapabilities = FilterCapabilities.ALL
+    BASE_URL: str = "https://hianime.at"
+    FILTER_CAPS: FilterCapabilities = FilterCapabilities.NO_QUERY
+
+    def get_info(self, identifier: str) -> ProviderInfoResult:
+        return ProviderInfoResult(
+            name=identifier,
+            image=None,
+            genres=[],
+            status=Status.ONGOING,
+            synopsis="",
+            release_year=None,
+            alternative_names=[],
+        )
 
     def get_search(
         self, query: str, filters: Filters = Filters()
     ) -> List[ProviderSearchResult]:
-        req = Request("GET", f"{self.BASE_URL}/browse")
-        req = AniDBAppFilter(req).apply(query, filters)
+        req = Request("GET", f"{self.BASE_URL}/search", params={"keyword": query})
         res = self._request_page(req)
-
-        current_page = BeautifulSoup(res.text, "html.parser")
-        pages = current_page.find("span", attrs={"class": "text-sm text-muted"})
-        if pages:
-            pages = parsenum(pages.findChildren()[-1].text)
-        else: 
-            pages = 1
-
-        results: list[ProviderSearchResult] = []
-
-        for p in range(2 if pages > 1 else 1, pages + 1):
-            anime_grid = current_page.find("div", attrs={"class": "anime-grid"})
-            if not anime_grid:
-                continue
-
-            anime = anime_grid.findAll(
-                "a", attrs={"class": "anime-card"}
-            )
-
-            for a in anime:
-                if a is None:
-                    continue
-
-                name = a.p.text
-                link = a["href"]
-                ident = link.split("-")[-1]
-                results.append(ProviderSearchResult(
-                    identifier=ident, name=name, languages={LanguageTypeEnum.UND}
-                ))
-
-            req.params["page"] = p
-            res = self._request_page(req)
-            current_page = BeautifulSoup(res.text, "html.parser")
-
-        results.sort(
-            key=lambda x: Levenshtein.ratio(query, x.name, processor=str.lower),
-            reverse=True,
-        )
-
+        soup = BeautifulSoup(res.text, "html.parser")
+        main_content = soup.find("div", id="main-content") or soup
+        cards = main_content.find_all("div", class_="film-detail")
+        results = []
+        for c in cards:
+            h3 = c.find("h3", class_="film-name")
+            if h3 and h3.a:
+                name = h3.a.get("title") or h3.a.text.strip()
+                href = h3.a["href"]
+                ident = href.rstrip("/").split("-")[-1]
+                results.append(
+                    ProviderSearchResult(
+                        identifier=ident,
+                        name=name,
+                        languages={LanguageTypeEnum.SUB, LanguageTypeEnum.DUB},
+                    )
+                )
         return results
 
-    def get_info(self, identifier: str) -> ProviderInfoResult:
-        req = Request(
-            "GET",
-            f"{self.BASE_URL}/anime/anime-{identifier}",
-        )
-        res = self._request_page(req)
-
-        soup = BeautifulSoup(res.text, "html.parser")
-
-        name = soup.find("h1", attrs={"class": "leading-tight"})
-        if name:
-            name = name.text
-        
-        image = soup.find("img", attrs={"class": "object-cover"})
-        if image:
-            image = image["src"]
-
-        year = soup.find("a", attrs={"href": re.compile(r"\/browse\?season=\w+&year=\d+")})
-        if year:
-            year = parsenum(year.text.split()[-1])
-        
-        genre_container = soup.findAll("div", attrs={"class": "flex flex-wrap gap-1.5 mb-4"})
-
-        genres = genre_container[-1].findAll("a", attrs={"href": re.compile(r"\/(genres|themes)\/.+")})
-        genres = [g.text for g in genres]
-
-        status = soup.find("a", attrs={"href": re.compile(r"\/browse\?status=.+")})
-        if status:
-            mapping = {
-                "Finished Airing": Status.COMPLETED,
-                "Currently Airing": Status.ONGOING,
-            }
-            status = mapping.get(status.text, None)
-
-        synopsis = soup.find("p", attrs={"class": "text-sm text-faint leading-relaxed"})
-        if synopsis:
-            synopsis = synopsis.text
-
-        synonyms = soup.find("dt", text=re.compile(r"Synonyms"))
-        if synonyms:
-            synonyms = [s.strip() for s in synonyms.findNextSibling().text.split(",")]
-
-        return ProviderInfoResult(
-            name = name,
-            image = image,
-            genres = genres,
-            synopsis = synopsis,
-            status = status,
-            release_year = year,
-            alternative_names = synonyms
-        )
-
     def get_episodes(self, identifier: str, lang: LanguageTypeEnum) -> List[Episode]:
-        req = Request(
-            "GET",
-            f"{self.BASE_URL}/api/frontend/anime/{identifier}/episodes",
-        )
+        req = Request("GET", f"{self.BASE_URL}/api/theme/episode/list/{identifier}")
         res = self._request_page(req).json()
-        return [e["number"] for e in res["episodes"]]
+        soup = BeautifulSoup(res.get("html", ""), "html.parser")
+        episodes = [
+            int(a["data-number"])
+            for a in soup.find_all("a", class_="ep-item")
+            if "data-number" in a.attrs
+        ]
+        return sorted(list(set(episodes)))
 
     def get_video(
         self, identifier: str, episode: Episode, lang: LanguageTypeEnum
     ) -> List[ProviderStream]:
-        req = Request(
-            "GET",
-            f"{self.BASE_URL}/api/frontend/anime/{identifier}/episodes",
-        )
-        res = self._request_page(req).json().get("episodes", [])
-        episode_id = next(filter(lambda e: e["number"] == episode, res))["id"]
-
-        req = Request(
-            "GET",
-            f"{self.BASE_URL}/api/frontend/episode/{episode_id}/languages",
-        )
-        res = self._request_page(req).json().get("languages", [])
-        if not res:
+        req = Request("GET", f"{self.BASE_URL}/api/theme/episode/list/{identifier}")
+        res = self._request_page(req).json()
+        soup = BeautifulSoup(res.get("html", ""), "html.parser")
+        ep_item = soup.find("a", attrs={"data-number": str(episode)})
+        if not ep_item:
             return []
-        
-        lang_short = "eng" if lang == LanguageTypeEnum.DUB else "jpn"
+        data_id = ep_item["data-id"]
 
-        embed_url = list(filter(lambda l: l["code"] == lang_short, res))
-        if not embed_url:
-            raise LangTypeNotAvailableError(identifier, self.NAME, lang)
+        req = Request(
+            "GET", f"{self.BASE_URL}/api/theme/episode/servers", params={"episodeId": data_id}
+        )
+        res = self._request_page(req).json()
+        srv_soup = BeautifulSoup(res.get("html", ""), "html.parser")
+        mode_str = "dub" if lang == LanguageTypeEnum.DUB else "sub"
+        target_item = None
+        for item in srv_soup.find_all("div", class_="server-item"):
+            if item.get("data-type") == mode_str:
+                raw_hash = item.get("data-hash", "")
+                try:
+                    dec = base64.b64decode(raw_hash).decode("utf-8", "ignore")
+                    if "zokoanime" in dec:
+                        target_item = item
+                        break
+                except Exception:
+                    pass
+                if not target_item:
+                    target_item = item
+        if not target_item:
+            return []
+
+        embed_url = base64.b64decode(target_item["data-hash"]).decode("utf-8")
+        req_embed = Request("GET", embed_url)
+        res_embed = self._request_page(req_embed)
+        m = re.search(r'window\.__P\s*=\s*"([^"]+)"', res_embed.text)
+        if not m:
+            return []
+        blob = m.group(1)
+        key = b"otaku-embed-v1"
+        raw = base64.b64decode(blob)
+        deobf = bytes([b ^ key[i % len(key)] for i, b in enumerate(raw)])
+        player_data = json.loads(deobf.decode("utf-8"))
+        m3u8_url = player_data.get("src")
+        if not m3u8_url:
+            return []
+
+        subs = {}
+        for sub in player_data.get("subtitles", []):
+            raw_label = sub.get("label", "en")
+            clean_name, iso_code = _normalize_sub_lang(raw_label, sub.get("lang", "en"))
+            subs[clean_name] = ExternalSub(
+                url=sub.get("src"),
+                shortcode=iso_code,
+                codec="vtt",
+                lang=clean_name,
+            )
+
+        req_m3u8 = Request("GET", m3u8_url, headers={"Referer": embed_url})
+        res_m3u8 = self._request_page(req_m3u8)
+        playlist = m3u8.M3U8(res_m3u8.text, base_uri=urljoin(m3u8_url, "."))
+        streams = []
+        if len(playlist.playlists) == 0:
+            streams.append(
+                ProviderStream(
+                    url=m3u8_url,
+                    resolution=1080,
+                    episode=episode,
+                    language=lang,
+                    subtitle=subs,
+                    referrer=embed_url,
+                    container="hls",
+                )
+            )
         else:
-            embed_url = embed_url[0]["embed_url"]
-
-        req = Request(
-            "GET",
-            embed_url,
-        )
-        res = self._request_page(req)
-
-        streams = HLS_RE.findall(res.text)
-        if not streams:
-            return []
-
-        sub_playlists = []
-        
-        for s in streams:
-            req = Request("GET", s)
-            res = self._request_page(req)
-
-            content = m3u8.M3U8(res.text, base_uri=urljoin(res.url, "."))
-
-            if len(content.playlists) == 0:
-                sub_playlists.append(
+            for p in playlist.playlists:
+                streams.append(
                     ProviderStream(
-                        url=s,
-                        resolution=1080,
+                        url=urljoin(playlist.base_uri, p.uri),
+                        resolution=p.stream_info.resolution[1]
+                        if p.stream_info.resolution
+                        else 1080,
                         episode=episode,
                         language=lang,
+                        subtitle=subs,
+                        referrer=embed_url,
                         container="hls",
                     )
                 )
-
-            for sub_playlist in content.playlists:
-                sub_playlists.append(
-                    ProviderStream(
-                        url=urljoin(content.base_uri, sub_playlist.uri),
-                        resolution=sub_playlist.stream_info.resolution[1],
-                        episode=episode,
-                        language=lang,
-                        container="hls",
-                    )
-                )
-        return sub_playlists
+        streams.sort(key=lambda s: s.resolution)
+        return streams

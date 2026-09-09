@@ -31,9 +31,9 @@ class Mpv(SubProcessPlayerBase):
             "{stream_url}",
             "--force-media-title={media_title}",
             "--sub-files={subtitles}",
+            "--slang=ara,ar,eng,en",
             "--force-window=immediate",
             "--referrer={referrer}",
-            *extra_args,
         ]
 
         super().__init__(

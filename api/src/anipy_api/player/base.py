@@ -1,17 +1,90 @@
 import atexit
+import io
 import os
+import re
 import subprocess as sp
 import tempfile
+import urllib.parse
+import zipfile
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Dict, List, Optional, Protocol
 
+from bs4 import BeautifulSoup
 import requests
 from anipy_api.error import PlayerError
+
+SUB_DIR = os.path.expanduser('~/Library/Application Support/anipy-cli/subtitles')
+os.makedirs(SUB_DIR, exist_ok=True)
+
+def fetch_arabic_subtitle(title: str, ep: int, alt_titles=None) -> Optional[str]:
+    safe_name = re.sub(r'[^a-zA-Z0-9]', '_', title)[:30]
+    cached_prefix = f'{safe_name}_EP{ep}.ara.'
+    try:
+        for existing in os.listdir(SUB_DIR):
+            if existing.startswith(cached_prefix):
+                return os.path.join(SUB_DIR, existing)
+    except Exception:
+        pass
+
+    queries = [title]
+    if alt_titles:
+        queries.extend(alt_titles)
+
+    headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', 'Referer': 'https://subdl.com/'}
+
+    for raw_title in queries:
+        clean = re.sub(r'[^a-zA-Z0-9\s]', ' ', raw_title)
+        tokens = [t for t in clean.split() if len(t) > 1 and t.lower() not in ('the', 'of', 'an', 'and', 'in', 'to', 'no', 'wa', 'ga')]
+        for q_str in (' '.join(tokens[:4]), ' '.join(tokens[:2])):
+            if not q_str.strip():
+                continue
+            try:
+                auto_url = f'https://api3.subdl.com/auto?query={urllib.parse.quote(q_str)}'
+                r = requests.get(auto_url, headers=headers, timeout=4)
+                results = r.json().get('results', [])
+                if not results:
+                    continue
+                for res in results[:2]:
+                    link = res.get('link')
+                    if not link:
+                        continue
+                    for sub_path in (f'{link}/first-season/arabic', f'{link}/arabic', link):
+                        r_page = requests.get(f'https://subdl.com{sub_path}', headers=headers, timeout=4)
+                        if r_page.status_code != 200:
+                            continue
+                        soup = BeautifulSoup(r_page.text, 'html.parser')
+                        candidates = []
+                        for a in soup.find_all('a', href=lambda h: h and 'dl.subdl.com' in h):
+                            node = a
+                            text = ''
+                            for _ in range(5):
+                                node = node.parent
+                                if node:
+                                    text = node.text
+                                    if any(k in text.lower() for k in ['e0', 'episode', 's01', f'- {ep:02d}', f'- {ep}']):
+                                        break
+                            clean_t = ' '.join(text.split())
+                            if re.search(rf'\bE0?{ep}\b', clean_t, re.I) or re.search(rf'-\s*0?{ep}\b', clean_t) or re.search(rf'\bEpisode\s*0?{ep}\b', clean_t, re.I):
+                                is_cr = 'crunchyroll' in clean_t.lower()
+                                candidates.append((is_cr, a['href']))
+                        if candidates:
+                            candidates.sort(key=lambda c: c[0], reverse=True)
+                            r_zip = requests.get(candidates[0][1], headers=headers, timeout=6)
+                            z = zipfile.ZipFile(io.BytesIO(r_zip.content))
+                            for fname in z.namelist():
+                                if fname.endswith(('.srt', '.ass', '.vtt')):
+                                    ext = fname.split('.')[-1]
+                                    out_path = os.path.join(SUB_DIR, f'{safe_name}_EP{ep}.ara.{ext}')
+                                    with open(out_path, 'wb') as f:
+                                        f.write(z.read(fname))
+                                    return out_path
+            except Exception:
+                continue
+    return None
 
 if TYPE_CHECKING:
     from anipy_api.anime import Anime
     from anipy_api.provider import ProviderStream
-
 
 class PlayCallback(Protocol):
     """Callback that gets called upon playing a title, it accepts a anime and the stream being played."""
@@ -79,25 +152,30 @@ class PlayerBase(ABC):
         return f"[{anime.provider.NAME}] {anime.name} E{stream.episode} [{stream.language}][{stream.resolution}p]"
 
     @staticmethod
-    def _get_media_sub(stream: "ProviderStream"):
+    def _get_media_sub(stream: "ProviderStream", anime: Optional["Anime"] = None):
         subtitles = {}
+        safe_title = re.sub(r'[^a-zA-Z0-9]', '_', anime.name)[:30] if anime and getattr(anime, "name", None) else "anime"
         if stream.subtitle:
             for name, sub in stream.subtitle.items():
                 suffix = f".{sub.shortcode if sub.shortcode else 'und'}.{sub.codec}"
-                subtitle_file = tempfile.NamedTemporaryFile(
-                    "w+", delete=False, suffix=suffix, encoding="utf-8"
-                )
-                req = requests.get(sub.url, headers={"Referer": stream.referrer})
-                subtitle_file.write(req.content.decode())
-                subtitles[name] = subtitle_file.name
+                out_file = os.path.join(SUB_DIR, f"{safe_title}_EP{stream.episode}{suffix}")
+                try:
+                    req = requests.get(sub.url, headers={"Referer": stream.referrer})
+                    with open(out_file, "w", encoding="utf-8") as f:
+                        f.write(req.content.decode("utf-8", "ignore"))
+                    subtitles[name] = out_file
+                except Exception:
+                    pass
 
-        def delete_files(files: Dict[str, str]):
-            for f in files.values():
-                os.remove(f)
+        # Always ensure Arabic subtitle is available
+        has_arabic = any("ara" in k.lower() or "arabic" in k.lower() for k in subtitles.keys())
+        if not has_arabic and anime and getattr(anime, "name", None):
+            alts = getattr(anime, "alternative_names", None)
+            ar_file = fetch_arabic_subtitle(anime.name, stream.episode, alts)
+            if ar_file:
+                subtitles["Arabic"] = ar_file
 
-        atexit.register(delete_files, subtitles)
         return subtitles
-
 
 class SubProcessPlayerBase(PlayerBase):
     """The base class for all players that are run through a sub process.
@@ -155,15 +233,16 @@ class SubProcessPlayerBase(PlayerBase):
         self._player_exec = player_path
 
     def play_title(self, anime: "Anime", stream: "ProviderStream"):
+        subs = self._get_media_sub(stream, anime)
+        arabic_sub = subs.get("Arabic")
+        if not arabic_sub:
+            arabic_sub = next((path for name, path in subs.items() if "ara" in name.lower()), None)
+        chosen_sub = arabic_sub if arabic_sub else (next(iter(subs.values())) if subs else "")
         player_cmd = [
             i.format(
                 media_title=self._get_media_title(anime, stream),
                 stream_url=stream.url,
-                subtitles=(
-                    "#".join(self._get_media_sub(stream).values())
-                    if self._player_exec == "vlc"
-                    else ":".join(self._get_media_sub(stream).values())
-                ),
+                subtitles=chosen_sub,
                 referrer=stream.referrer,
                 container=stream.container
             )

@@ -27,12 +27,26 @@ KEYGEN_URL: str = (
     "https://raw.githubusercontent.com/sdaqo/anipy-cli/refs/heads/key-gen/scripts/keygen/keygen.json"
 )
 
-@functools.lru_cache()
-def fetch_keygen(session: Session):
-    req = Request("GET", KEYGEN_URL)
-    res = request_page(session, req)
-    return json.loads(res.text)
+DEFAULT_KEYGEN = {
+    "build_id": "162",
+    "epoch": 2957,
+    "lane": "k7",
+    "key": "43724f7d46135c6cdb2824f00c4ee272a0fff52f89681213140c6c2b80af8d21",
+    "query_hash": "c66a5306b7ab6cf4701e766cb352b25b70198e873c4e917f9388da75db5cdca2",
+    "static_key": "Xot36i3lK3:v1",
+}
 
+@functools.lru_cache()
+def fetch_keygen(session: Session = None):
+    try:
+        req = Request("GET", KEYGEN_URL)
+        res = request_page(session or Session(), req)
+        data = json.loads(res.text)
+        if data.get("query_hash") == "6b48b24cc684033f90a13879521dc64c9527d698baf1bd78232120767d691eb1":
+            return DEFAULT_KEYGEN
+        return data
+    except Exception:
+        return DEFAULT_KEYGEN
 
 
 def build_source_request(session: Session) -> Tuple[str, str, str, str]:
@@ -227,20 +241,11 @@ class AllAnimeProvider(BaseProvider):
             return response
 
     def get_episodes(self, identifier: str, lang: LanguageTypeEnum) -> List[Episode]:
+        query = f'{{ show(_id: "{identifier}") {{ _id availableEpisodesDetail }} }}'
         req = Request(
             "POST",
             self.API_URL,
-            json={
-                "variables": json.dumps({"_id": identifier}),
-                "extensions": json.dumps(
-                    {
-                        "persistedQuery": {
-                            "version": 1,
-                            "sha256Hash": "043448386c7a686bc2aabfbb6b80f6074e795d350df48015023b079527b0848a",
-                        }
-                    }
-                ),
-            },
+            json={"query": query},
             headers={"Referer": "https://allmanga.to/"},
         )
         result = self._request_page(req).json()
@@ -253,20 +258,11 @@ class AllAnimeProvider(BaseProvider):
         return sorted([parsenum(e) for e in episodes])
 
     def get_info(self, identifier: str) -> "ProviderInfoResult":
+        query = f'{{ show(_id: "{identifier}") {{ _id name thumbnail genres status description airedStart altNames }} }}'
         req = Request(
             "POST",
             self.API_URL,
-            json={
-                "variables": json.dumps({"_id": identifier}),
-                "extensions": json.dumps(
-                    {
-                        "persistedQuery": {
-                            "version": 1,
-                            "sha256Hash": "043448386c7a686bc2aabfbb6b80f6074e795d350df48015023b079527b0848a",
-                        }
-                    }
-                ),
-            },
+            json={"query": query},
             headers={"Referer": "https://allmanga.to/"},
         )
         result = self._request_page(req).json()
@@ -357,17 +353,7 @@ class AllAnimeProvider(BaseProvider):
                         )
                     )
                 continue
-
-            if "tools.fast4speed.rsvp" in provider["sourceUrl"]:
-                streams.append(
-                    ProviderStream(
-                        url=provider["sourceUrl"],
-                        resolution=1080,
-                        episode=episode,
-                        language=lang,
-                        referrer=self.BASE_URL,
-                    )
-                )
+            if not provider["sourceUrl"].startswith("--"):
                 continue
 
             decrypted_path = self._decrypt(

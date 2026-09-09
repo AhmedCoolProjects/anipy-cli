@@ -38,12 +38,15 @@ def search_show_prompt(
     with DotSpinner("Searching for ", colors.BLUE, query, "..."):
         results: List[Anime] = []
         for provider in get_prefered_providers(mode):
-            results.extend(
-                [
-                    Anime.from_search_result(provider, x)
-                    for x in provider.get_search(query)
-                ]
-            )
+            try:
+                results.extend(
+                    [
+                        Anime.from_search_result(provider, x)
+                        for x in provider.get_search(query)
+                    ]
+                )
+            except Exception:
+                continue
 
     if len(results) == 0:
         error("no search results")
@@ -300,12 +303,15 @@ def parse_auto_search(
     with DotSpinner("Searching for ", colors.BLUE, query, "..."):
         results: List[Anime] = []
         for provider in get_prefered_providers(mode):
-            results.extend(
-                [
-                    Anime.from_search_result(provider, x)
-                    for x in provider.get_search(query)
-                ]
-            )
+            try:
+                results.extend(
+                    [
+                        Anime.from_search_result(provider, x)
+                        for x in provider.get_search(query)
+                    ]
+                )
+            except Exception:
+                continue
     if len(results) == 0:
         error(f"no anime found for query {query}", fatal=True)
 
