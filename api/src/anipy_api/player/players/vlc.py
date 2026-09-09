@@ -25,7 +25,7 @@ class Vlc(SubProcessPlayerBase):
         self.player_args_template = [
             "--meta-title='{media_title}'",
             "--http-referrer={referrer}",
-            "--input-slave={subtitles}",
+            "--input-slave={preferred_sub}",
             "{stream_url}",
             *extra_args,
         ]

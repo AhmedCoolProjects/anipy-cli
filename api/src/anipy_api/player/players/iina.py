@@ -39,12 +39,19 @@ class Iina(SubProcessPlayerBase):
         ]
         if stream.referrer:
             cmd.append(f"--mpv-referrer={stream.referrer}")
-        arabic_sub = subs.get("Arabic")
-        if not arabic_sub:
-            arabic_sub = next((path for name, path in subs.items() if "ara" in name.lower()), None)
-        chosen_sub = arabic_sub if arabic_sub else (next(iter(subs.values())) if subs else None)
-        if chosen_sub:
-            cmd.append(f"--mpv-sub-files={chosen_sub}")
+        best_sub = ""
+        ara_subs = []
+        for k, v in subs.items():
+            if k.lower().startswith("arabic"):
+                ara_subs.append(v)
+        import os as _os
+        want = int(_os.environ.get("ANIPY_ARABIC_INDEX", "0"))
+        if len(ara_subs) > want:
+            best_sub = ara_subs[want]
+        elif ara_subs:
+            best_sub = ara_subs[0]
+        if best_sub:
+            cmd.append(f"--mpv-sub-files={best_sub}")
         cmd.extend(self.extra_args)
         cmd.append(stream.url)
         if isinstance(self._sub_proc, sp.Popen):

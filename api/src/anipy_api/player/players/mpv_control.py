@@ -55,9 +55,12 @@ class MpvControllable(PlayerBase):
         self.mpv.referrer = stream.referrer
 
         self.mpv.play(stream.url)
-        for name, sub in self._get_media_sub(stream).items():
-            self.mpv.sub_add(title=name, url=sub)
-        self.mpv.sub = 1
+        preferred_id = None
+        for name, sub in self._get_media_sub(stream, anime).items():
+            track_id = self.mpv.sub_add(title=name, url=sub)
+            if preferred_id is None and "arabic" in name.lower():
+                preferred_id = track_id
+        self.mpv.sub = preferred_id or 1
         self._call_play_callback(anime, stream)
 
     def play_file(self, path: str):
