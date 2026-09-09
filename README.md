@@ -10,6 +10,103 @@ This project's main aim is to create an enjoyable experience watching and downlo
 
 Since the version 3 rewrite this project is split into api and frontend. This makes it easy to integrate anipy-cli into your own project!
 
+---
+
+## ⚡ Ahmed's Fork Features & Improvements
+
+This fork contains fixes and feature additions for everyday use:
+
+- **🛡️ DNS-over-HTTPS (DoH) Bypass:** Patched socket resolution to use Cloudflare / Google DoH automatically, bypassing ISP/regional domain blocking on streaming CDNs.
+- **🌍 Arabic Subtitle Support:** Automatic subtitle scraping and caching from SubDL for every episode if not provided by the stream source.
+- **🎬 HiAnime Provider:** Fixed streaming provider scraping `hianime.at` with XOR stream decryption (`otaku-embed-v1`) and external subtitle extraction.
+- **🔧 AllAnime Provider Fix:** Inline GraphQL queries and fallback keygen logic when remote query hashes fail.
+- **📺 IINA & MPV Player Enhancements:** Seamless IINA player integration on macOS with proper subtitle forwarding (`--mpv-sub-files`), and MPV subtitle language preference (`--slang=ara,ar,eng,en`).
+- **🚀 Resilient Search:** Graceful error handling across search providers so one failing provider doesn't abort the search.
+
+---
+
+## 📦 Installation on Any Machine
+
+### 1. Install Prerequisites
+
+**macOS:**
+```bash
+# Install video player (IINA or MPV) and pipx
+brew install --cask iina
+brew install mpv ffmpeg pipx
+pipx ensurepath
+```
+
+**Linux (Debian/Ubuntu):**
+```bash
+sudo apt update && sudo apt install -y mpv ffmpeg pipx python3-pip
+pipx ensurepath
+```
+
+### 2. Install this Fork
+
+Install both the patched API and the CLI directly using `pipx`:
+
+```bash
+# Option A: Directly from GitHub
+pip install "git+https://github.com/AhmedCoolProjects/anipy-cli.git#subdirectory=api"
+pipx install "git+https://github.com/AhmedCoolProjects/anipy-cli.git#subdirectory=cli"
+```
+
+Or by cloning locally:
+```bash
+# Option B: From a local clone
+git clone https://github.com/AhmedCoolProjects/anipy-cli.git
+cd anipy-cli
+pip install ./api
+pipx install ./cli
+```
+
+### 3. Configure Video Player
+
+Run `anipy-cli -v` once to generate the default configuration file:
+```bash
+anipy-cli -v
+```
+
+To set **IINA** as default player (macOS):
+```bash
+# macOS
+sed -i '' 's/^player_path: .*/player_path: iina/' "$HOME/Library/Application Support/anipy-cli/config.yaml"
+```
+
+Or to use **MPV**:
+```bash
+# macOS
+sed -i '' 's/^player_path: .*/player_path: mpv/' "$HOME/Library/Application Support/anipy-cli/config.yaml"
+
+# Linux
+sed -i 's/^player_path: .*/player_path: mpv/' "$HOME/.config/anipy-cli/config.yaml"
+```
+
+---
+
+## 🎮 Quick Usage Guide
+
+```bash
+# Interactive menu
+anipy-cli
+
+# Direct search & watch (format: query:episode:type)
+anipy-cli -s "frieren:1:sub"
+
+# Binge mode (multiple episodes)
+anipy-cli -B -s "attack on titan:1-5:sub"
+
+# Watch history
+anipy-cli -H
+
+# Download episodes
+anipy-cli -D -s "naruto:1-3:sub"
+
+# Override player on the fly (-p iina / -p mpv / -p vlc)
+anipy-cli -p iina
+```
 ## You are just here for the client?
 <a href="https://pypi.org/project/anipy-cli/"><img alt="PyPI - Version" src="https://img.shields.io/pypi/v/anipy-cli?style=for-the-badge&logo=pypi&label=anipy-cli"></a>
 
